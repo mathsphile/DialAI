@@ -49,51 +49,40 @@ class BridgeSession {
   }
 
   _startDrainLoop() {
-    // Exactly 20ms pacing loop
+    // 20ms pacing loop to send audio in smooth 80ms packets
     this.timer = setInterval(() => {
       try {
         if (this.isStopped) return;
 
         // JITTER BUFFER LOGIC:
-        // If we haven't started draining yet, wait for the prefill to hit our target.
-        // This ensures the first word doesn't chop.
-        if (!this.isDraining) {
-          if (this.queue.length >= this.prefillNeeded) {
-            this.isDraining = true;
-          } else {
-            return; // Not enough audio yet
-          }
+        // Wait for initial prefill before starting playback (prevents first-word chop)
+        if (!this.isDraining && this.queue.length >= this.prefillNeeded) {
+          this.isDraining = true;
         }
 
-        // If we run out of audio, stop draining and wait for a new prefill.
-        // This prevents the "choppy" sound of a starving buffer.
-        if (this.queue.length === 0) {
-          this.isDraining = false;
-          return;
-        }
-
-        // Group 4 chunks into one 80ms packet for high-latency stability
-        let chunksToCombine = [];
-        for (let i = 0; i < 4; i++) {
-          if (this.queue.length > 0) {
+        // Only send if we've started draining AND have at least 1 chunk available
+        if (this.isDraining && this.queue.length > 0) {
+          // Group up to 4 chunks into one 80ms packet for stable streaming
+          let chunksToCombine = [];
+          for (let i = 0; i < 4 && this.queue.length > 0; i++) {
             chunksToCombine.push(this.queue.shift());
           }
-        }
 
-        if (chunksToCombine.length > 0) {
-          const combined = Buffer.concat(chunksToCombine);
-          const duration = Math.round((combined.length / 8000) * 1000);
-          
-          if (this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({
-              event: 'media',
-              stream_sid: this.sid,
-              media: { 
-                payload: combined.toString('base64'), 
-                timestamp: String(this.ts) 
-              }
-            }));
-            this.ts += duration;
+          if (chunksToCombine.length > 0) {
+            const combined = Buffer.concat(chunksToCombine);
+            const duration = Math.round((combined.length / 8000) * 1000);
+            
+            if (this.ws.readyState === WebSocket.OPEN) {
+              this.ws.send(JSON.stringify({
+                event: 'media',
+                stream_sid: this.sid,
+                media: { 
+                  payload: combined.toString('base64'), 
+                  timestamp: String(this.ts) 
+                }
+              }));
+              this.ts += duration;
+            }
           }
         }
       } catch (err) { }
