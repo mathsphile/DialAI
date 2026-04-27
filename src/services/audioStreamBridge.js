@@ -2,107 +2,77 @@
 
 const WebSocket = require('ws');
 const { logger, runWithCallContext } = require('../utils/logger');
-const {
-  mulawToLinear16,
-  base64PCMToBase64Mulaw,
-} = require('../utils/audioConverter');
+const { mulawToLinear16, base64PCMToBase64Mulaw } = require('../utils/audioConverter');
 const { createSession }  = require('./elevenLabsAgentService');
 
 const log = logger.forModule('audioStreamBridge');
 
-const ipConnections = new Map();
-
 class BridgeSession {
-  constructor(twilioWs) {
-    this.twilioWs   = twilioWs;
-    this.streamSid  = null;
-    this.elSession  = null;
-    this.isStarted     = false;
-    this._outboundQueue = [];
-    this._outboundTimer = null;
-    this._outboundTimestampMs = 0;
+  constructor(ws) {
+    this.ws = ws;
+    this.sid = null;
+    this.el = null;
+    this.queue = [];
+    this.timer = null;
+    this.ts = 0;
   }
 
-  async onStart(startPayload) {
-    this.streamSid = startPayload.streamSid || startPayload.stream_sid;
-    this.isStarted = true;
-    log.info('Media stream started', { sid: this.streamSid });
-    
-    // Immediately send a small silence packet to "ping" the telephony hardware
-    this._sendSilence();
-    
-    await runWithCallContext({ callSid: this.streamSid }, () => this._connectElevenLabs());
-  }
-
-  _sendSilence() {
-    if (this.twilioWs.readyState === WebSocket.OPEN) {
-      this.twilioWs.send(JSON.stringify({
-        event: 'media',
-        stream_sid: this.streamSid,
-        media: { payload: 'f/f/f/8=', chunk: '1', timestamp: '0' }
-      }));
-    }
-  }
-
-  onMedia(mediaPayload) {
-    if (!this.isStarted || !this.elSession || !mediaPayload.payload) return;
-    const mulawBuf = Buffer.from(mediaPayload.payload, 'base64');
-    const pcmBuf = mulawToLinear16(mulawBuf);
-    this.elSession.sendAudio(pcmBuf.toString('base64'));
-  }
-
-  async _connectElevenLabs() {
-    try {
-      this.elSession = await createSession({ callSid: this.streamSid });
-      this.elSession.on('audio', (base64PCM, _id, sampleRate) => {
-        const fullOutbound = base64PCMToBase64Mulaw(base64PCM, sampleRate);
-        if (!fullOutbound) return;
-        const buf = Buffer.from(fullOutbound, 'base64');
-        // Slice into 40ms chunks (320 bytes) for better stability on Railway
-        for (let i = 0; i < buf.length; i += 320) {
-          this._outboundQueue.push(buf.slice(i, i + 320).toString('base64'));
+  async start(data) {
+    this.sid = data.streamSid || data.stream_sid;
+    log.info('Media Stream Connected', { sid: this.sid });
+    await runWithCallContext({ callSid: this.sid }, async () => {
+      this.el = await createSession({ callSid: this.sid });
+      this.el.on('audio', (pcm, id, rate) => {
+        const mulaw = base64PCMToBase64Mulaw(pcm, rate);
+        if (!mulaw) return;
+        const buf = Buffer.from(mulaw, 'base64');
+        for (let i = 0; i < buf.length; i += 160) {
+          this.queue.push(buf.slice(i, i + 160).toString('base64'));
         }
       });
-      this.elSession.on('close', () => this.destroy('el-closed'));
-      this._startDrain();
-    } catch (err) { log.error('EL Connect Error', { err: err.message }); }
+      this.el.on('close', () => this.stop('el-closed'));
+      this._drain();
+    });
   }
 
-  _startDrain() {
-    this._outboundTimer = setInterval(() => {
-      const payload = this._outboundQueue.shift();
-      if (payload && this.twilioWs.readyState === WebSocket.OPEN) {
-        this.twilioWs.send(JSON.stringify({
+  _drain() {
+    this.timer = setInterval(() => {
+      const payload = this.queue.shift();
+      if (payload && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({
           event: 'media',
-          stream_sid: this.streamSid,
-          media: { payload, timestamp: String(this._outboundTimestampMs) }
+          stream_sid: this.sid,
+          media: { payload, timestamp: String(this.ts) }
         }));
-        this._outboundTimestampMs += 40;
+        this.ts += 20;
       }
-    }, 40);
+    }, 20);
   }
 
-  destroy(reason) {
-    clearInterval(this._outboundTimer);
-    if (this.elSession) this.elSession.close();
-    if (this.twilioWs) this.twilioWs.close();
-    log.info('Session destroyed', { reason });
+  stop(reason) {
+    clearInterval(this.timer);
+    if (this.el) this.el.close();
+    if (this.ws) this.ws.close();
+    log.info('Stream Stopped', { reason });
   }
 }
 
 function createBridge(httpServer) {
   const wss = new WebSocket.Server({ server: httpServer, path: '/media-stream' });
   wss.on('connection', (ws) => {
+    log.info('New WebSocket Connection Attempt');
     const session = new BridgeSession(ws);
     ws.on('message', async (data) => {
       try {
         const msg = JSON.parse(data.toString());
-        if (msg.event === 'start') await session.onStart(msg.start);
-        else if (msg.event === 'media') session.onMedia(msg.media);
-        else if (msg.event === 'stop') session.destroy('stop');
+        if (msg.event === 'start') await session.start(msg.start);
+        else if (msg.event === 'media' && session.el) {
+          const pcm = mulawToLinear16(Buffer.from(msg.media.payload, 'base64'));
+          session.el.sendAudio(pcm.toString('base64'));
+        } else if (msg.event === 'stop') session.stop('telephony-stop');
       } catch (e) {}
     });
-    ws.on('close', () => session.destroy('ws-closed'));
+    ws.on('close', () => session.stop('ws-closed'));
   });
   return wss;
 }
