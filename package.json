@@ -1,7 +1,7 @@
 {
-  "name": "dialai-bharat",
+  "name": "dialai",
   "version": "1.0.0",
-  "description": "DialAI Bharat – Voice AI Helpline for Rural India powered by ElevenLabs + Twilio",
+  "description": "DialAI – General Purpose Voice AI Assistant powered by ElevenLabs + Exotel",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -12,15 +12,12 @@
   },
   "keywords": [
     "voice-ai",
-    "india",
-    "hindi",
     "elevenlabs",
-    "twilio",
-    "rural",
+    "exotel",
     "helpline",
     "conversational-ai"
   ],
-  "author": "DialAI Bharat",
+  "author": "DialAI",
   "license": "MIT",
   "dependencies": {
     "axios": "^1.7.2",
@@ -30,7 +27,6 @@
     "helmet": "^7.1.0",
     "morgan": "^1.10.0",
     "node-cache": "^5.1.2",
-    "twilio": "^5.1.0",
     "winston": "^3.13.0",
     "ws": "^8.17.1"
   },
@@ -39,9 +35,13 @@
     "nodemon": "^3.1.4"
   },
   "nodemonConfig": {
-    "watch": ["src"],
+    "watch": [
+      "src"
+    ],
     "ext": "js,json",
-    "ignore": ["src/**/*.test.js"],
+    "ignore": [
+      "src/**/*.test.js"
+    ],
     "delay": 500
   },
   "engines": {

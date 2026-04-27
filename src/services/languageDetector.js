@@ -3,7 +3,7 @@
 /**
  * languageDetector.js
  * ─────────────────────────────────────────────────────────────────────────────
- * Lightweight, zero-dependency language detector for DialAI Bharat.
+ * Lightweight, zero-dependency language detector for DialAI.
  *
  * Supported languages
  * ───────────────────
@@ -52,7 +52,7 @@ const SCRIPT_THRESHOLD = parseFloat(
 
 /**
  * Devanagari Hindi stopwords (native script).
- * Sorted by corpus frequency in conversational / rural Hindi.
+ * Sorted by corpus frequency in conversational / Hindi.
  */
 const HINDI_STOPWORDS_DEVANAGARI = new Set([
   "है",
@@ -187,7 +187,7 @@ const BENGALI_STOPWORDS_NATIVE = new Set([
 
 /**
  * Romanised Hindi words.
- * Includes common rural-context vocabulary (farming, weather, health, govt).
+ * Includes common vocabulary (farming, weather, health, govt).
  */
 const HINDI_LATIN_WORDS = new Set([
   // Grammar & discourse markers
@@ -248,7 +248,7 @@ const HINDI_LATIN_WORDS = new Set([
   "sab",
   "bahut",
   "thoda",
-  // Farmer / rural context
+  // General context
   "barish",
   "baarish",
   "mausam",
@@ -348,7 +348,7 @@ const BENGALI_LATIN_WORDS = new Set([
   "sei",
   "bhalo",
   "kharap",
-  // Farmer / rural context
+  // General context
   "bristi",
   "brishti",
   "abohaoa",

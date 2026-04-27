@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * DialAI Bharat – Structured Logger
+ * DialAI – Structured Logger
  * ------------------------------------
  * Winston-based logger with:
  *  • Console + rotating-file transports
@@ -88,7 +88,7 @@ function makeFileTransport(filename, level) {
 // ─── Logger instance ────────────────────────────────────────────────────────────
 const logger = createLogger({
   level      : LOG_LEVEL,
-  defaultMeta: { service: 'dialai-bharat' },
+  defaultMeta: { service: 'dialai' },
   exitOnError: false,
   transports : [
     // ── Console ──────────────────────────────────────────────────────────────
