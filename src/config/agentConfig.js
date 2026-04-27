@@ -37,7 +37,7 @@ const CONVERSATION_CONFIG = {
   conversation: {
     max_duration_seconds: 600,
     client_events: ['audio', 'agent_response', 'user_transcript', 'interruption', 'ping'],
-    turn_timeout_ms: 1000,
+    turn_timeout_ms: 30000,  // 30 seconds - give user time to respond after agent finishes
   },
 };
 
