@@ -3,7 +3,7 @@
 const WebSocket = require('ws');
 const { logger, runWithCallContext } = require('../utils/logger');
 const {
-  base64MulawToBase64PCM16k,
+  mulawToLinear16,
   base64PCMToBase64Mulaw,
   normaliseVolume,
 } = require('../utils/audioConverter');
@@ -60,20 +60,31 @@ class BridgeSession {
   }
 
   onMedia(mediaPayload) {
-    if (this.isStopped || !this.isStarted) return;
-    const pcmBuf = base64MulawToBase64PCM16k(mediaPayload.payload);
-    if (!pcmBuf) return;
+    if (this.isStopped || !this.isStarted || !mediaPayload.payload) return;
+    
+    // Decode base64 mulaw to Buffer
+    const mulawBuf = Buffer.from(mediaPayload.payload, 'base64');
+    // Convert to PCM16 Buffer
+    const pcmBuf = mulawToLinear16(mulawBuf);
+    
     const normalised = normaliseVolume(pcmBuf, 3500);
     this._audioAccumulator.push(normalised);
     this._accumulatorBytes += normalised.length;
-    if (this._accumulatorBytes >= 6400) this._flush();
-    else if (!this._flushTimer) this._flushTimer = setTimeout(() => this._flush(), AUDIO_FLUSH_INTERVAL_MS);
+    
+    if (this._accumulatorBytes >= 6400) {
+      this._flush();
+    } else if (!this._flushTimer) {
+      this._flushTimer = setTimeout(() => this._flush(), AUDIO_FLUSH_INTERVAL_MS);
+    }
   }
 
   _flush() {
-    clearTimeout(this._flushTimer);
-    this._flushTimer = null;
+    if (this._flushTimer) {
+      clearTimeout(this._flushTimer);
+      this._flushTimer = null;
+    }
     if (this._audioAccumulator.length === 0 || !this.isELConnected) return;
+    
     const combined = Buffer.concat(this._audioAccumulator);
     this.elSession.sendAudio(combined.toString('base64'));
     this._audioAccumulator = [];
@@ -113,8 +124,8 @@ class BridgeSession {
   destroy(reason = 'unknown') {
     if (this.isStopped) return;
     this.isStopped = true;
-    clearTimeout(this._flushTimer);
-    clearInterval(this._outboundTimer);
+    if (this._flushTimer) clearTimeout(this._flushTimer);
+    if (this._outboundTimer) clearInterval(this._outboundTimer);
     if (this.elSession) this.elSession.close();
     if (this.twilioWs) this.twilioWs.close();
     decrementIpCount(this.clientIp);
