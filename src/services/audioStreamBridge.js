@@ -15,7 +15,7 @@ const log = logger.forModule('audioStreamBridge');
 const AUDIO_FLUSH_INTERVAL_MS = 200;
 const MAX_WS_PER_IP           = 10;
 const MAX_CONCURRENT_CALLS    = 50;
-const EXOTEL_FRAME_MS         = 100;
+const SPEECH_DETECTION_THRESHOLD = 250;
 
 const ipConnections = new Map();
 
@@ -62,19 +62,21 @@ class BridgeSession {
   onMedia(mediaPayload) {
     if (this.isStopped || !this.isStarted || !mediaPayload.payload) return;
     
-    // Decode base64 mulaw to Buffer
-    const mulawBuf = Buffer.from(mediaPayload.payload, 'base64');
-    // Convert to PCM16 Buffer
-    const pcmBuf = mulawToLinear16(mulawBuf);
-    
-    const normalised = normaliseVolume(pcmBuf, 3500);
-    this._audioAccumulator.push(normalised);
-    this._accumulatorBytes += normalised.length;
-    
-    if (this._accumulatorBytes >= 6400) {
-      this._flush();
-    } else if (!this._flushTimer) {
-      this._flushTimer = setTimeout(() => this._flush(), AUDIO_FLUSH_INTERVAL_MS);
+    try {
+      const mulawBuf = Buffer.from(mediaPayload.payload, 'base64');
+      const pcmBuf = mulawToLinear16(mulawBuf);
+      const normalised = normaliseVolume(pcmBuf, 3500);
+      
+      this._audioAccumulator.push(normalised);
+      this._accumulatorBytes += normalised.length;
+      
+      if (this._accumulatorBytes >= 6400) {
+        this._flush();
+      } else if (!this._flushTimer) {
+        this._flushTimer = setTimeout(() => this._flush(), AUDIO_FLUSH_INTERVAL_MS);
+      }
+    } catch (e) {
+      this._log.error('Media processing error', { err: e.message });
     }
   }
 
@@ -95,10 +97,16 @@ class BridgeSession {
     try {
       this.elSession = await createSession({ callSid: this.callSid });
       this.isELConnected = true;
+      
       this.elSession.on('audio', (base64PCM, _id, sampleRate) => {
+        // ElevenLabs typically sends 20ms chunks of 16kHz PCM (640 bytes)
+        // Convert to 20ms of 8kHz mulaw (160 bytes)
         const outbound = base64PCMToBase64Mulaw(base64PCM, sampleRate);
-        if (outbound) this._outboundQueue.push(outbound);
+        if (outbound) {
+          this._outboundQueue.push(outbound);
+        }
       });
+      
       this.elSession.on('close', () => this.destroy('elevenlabs-closed'));
       this._startOutboundDrain();
     } catch (err) {
@@ -108,15 +116,25 @@ class BridgeSession {
   }
 
   _startOutboundDrain() {
+    // Correct pacing: Send one 20ms chunk every 20ms.
+    // Telephony expects precise timing.
     this._outboundTimer = setInterval(() => {
+      if (this.isStopped) return;
+      
       const payload = this._outboundQueue.shift();
       if (payload && this.twilioWs.readyState === WebSocket.OPEN) {
         this.twilioWs.send(JSON.stringify({
           event: 'media',
           stream_sid: this.streamSid,
-          media: { payload, chunk: String(this._outboundChunk++), timestamp: String(this._outboundTimestampMs) }
+          media: { 
+            payload, 
+            chunk: String(this._outboundChunk++), 
+            timestamp: String(this._outboundTimestampMs) 
+          }
         }));
-        this._outboundTimestampMs += EXOTEL_FRAME_MS;
+        
+        // Each chunk is 20ms of audio
+        this._outboundTimestampMs += 20;
       }
     }, 20);
   }
