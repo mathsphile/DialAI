@@ -15,7 +15,6 @@ const log = logger.forModule('audioStreamBridge');
 const AUDIO_FLUSH_INTERVAL_MS = 200;
 const MAX_WS_PER_IP           = 10;
 const MAX_CONCURRENT_CALLS    = 50;
-const SPEECH_DETECTION_THRESHOLD = 250;
 
 const ipConnections = new Map();
 
@@ -61,32 +60,20 @@ class BridgeSession {
 
   onMedia(mediaPayload) {
     if (this.isStopped || !this.isStarted || !mediaPayload.payload) return;
-    
     try {
       const mulawBuf = Buffer.from(mediaPayload.payload, 'base64');
       const pcmBuf = mulawToLinear16(mulawBuf);
       const normalised = normaliseVolume(pcmBuf, 3500);
-      
       this._audioAccumulator.push(normalised);
       this._accumulatorBytes += normalised.length;
-      
-      if (this._accumulatorBytes >= 6400) {
-        this._flush();
-      } else if (!this._flushTimer) {
-        this._flushTimer = setTimeout(() => this._flush(), AUDIO_FLUSH_INTERVAL_MS);
-      }
-    } catch (e) {
-      this._log.error('Media processing error', { err: e.message });
-    }
+      if (this._accumulatorBytes >= 6400) this._flush();
+      else if (!this._flushTimer) this._flushTimer = setTimeout(() => this._flush(), AUDIO_FLUSH_INTERVAL_MS);
+    } catch (e) { this._log.error('Media error', { err: e.message }); }
   }
 
   _flush() {
-    if (this._flushTimer) {
-      clearTimeout(this._flushTimer);
-      this._flushTimer = null;
-    }
+    if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
     if (this._audioAccumulator.length === 0 || !this.isELConnected) return;
-    
     const combined = Buffer.concat(this._audioAccumulator);
     this.elSession.sendAudio(combined.toString('base64'));
     this._audioAccumulator = [];
@@ -97,44 +84,35 @@ class BridgeSession {
     try {
       this.elSession = await createSession({ callSid: this.callSid });
       this.isELConnected = true;
-      
       this.elSession.on('audio', (base64PCM, _id, sampleRate) => {
-        // ElevenLabs typically sends 20ms chunks of 16kHz PCM (640 bytes)
-        // Convert to 20ms of 8kHz mulaw (160 bytes)
-        const outbound = base64PCMToBase64Mulaw(base64PCM, sampleRate);
-        if (outbound) {
-          this._outboundQueue.push(outbound);
+        const fullOutboundBase64 = base64PCMToBase64Mulaw(base64PCM, sampleRate);
+        if (!fullOutboundBase64) return;
+        
+        // CRITICAL: Slice larger audio blocks into 20ms (160 byte) chunks
+        const fullBuf = Buffer.from(fullOutboundBase64, 'base64');
+        for (let i = 0; i < fullBuf.length; i += 160) {
+          const chunk = fullBuf.slice(i, i + 160);
+          if (chunk.length > 0) {
+            this._outboundQueue.push(chunk.toString('base64'));
+          }
         }
       });
-      
       this.elSession.on('close', () => this.destroy('elevenlabs-closed'));
       this._startOutboundDrain();
-    } catch (err) {
-      this._log.error('ElevenLabs connection failed', { err: err.message });
-      this.destroy('elevenlabs-failed');
-    }
+    } catch (err) { this._log.error('EL failed', { err: err.message }); this.destroy('el-failed'); }
   }
 
   _startOutboundDrain() {
-    // Correct pacing: Send one 20ms chunk every 20ms.
-    // Telephony expects precise timing.
     this._outboundTimer = setInterval(() => {
       if (this.isStopped) return;
-      
       const payload = this._outboundQueue.shift();
       if (payload && this.twilioWs.readyState === WebSocket.OPEN) {
         this.twilioWs.send(JSON.stringify({
           event: 'media',
           stream_sid: this.streamSid,
-          media: { 
-            payload, 
-            chunk: String(this._outboundChunk++), 
-            timestamp: String(this._outboundTimestampMs) 
-          }
+          media: { payload, chunk: String(this._outboundChunk++), timestamp: String(this._outboundTimestampMs) }
         }));
-        
-        // Each chunk is 20ms of audio
-        this._outboundTimestampMs += 20;
+        this._outboundTimestampMs += 20; // Exactly 20ms per 160-byte chunk
       }
     }, 20);
   }
@@ -155,10 +133,7 @@ function createBridge(httpServer, { path = '/media-stream' } = {}) {
   const wss = new WebSocket.Server({ server: httpServer, path });
   wss.on('connection', (ws, req) => {
     const clientIp = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
-    if (incrementIpCount(clientIp) > MAX_WS_PER_IP) {
-       decrementIpCount(clientIp);
-       return ws.close(1008, 'Rate limit exceeded');
-    }
+    if (incrementIpCount(clientIp) > MAX_WS_PER_IP) { decrementIpCount(clientIp); return ws.close(); }
     const session = new BridgeSession(ws, clientIp);
     ws.on('message', async (data) => {
       try {
@@ -166,10 +141,9 @@ function createBridge(httpServer, { path = '/media-stream' } = {}) {
         if (msg.event === 'start') await session.onStart(msg.start);
         else if (msg.event === 'media') session.onMedia(msg.media);
         else if (msg.event === 'stop') session.destroy('telephony-stop');
-      } catch (e) { log.error('WS Message Error', { err: e.message }); }
+      } catch (e) { /* ignore parse error */ }
     });
     ws.on('close', () => session.destroy('ws-closed'));
-    ws.on('error', (e) => session.destroy('ws-error: ' + e.message));
   });
   return wss;
 }
