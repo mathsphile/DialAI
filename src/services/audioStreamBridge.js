@@ -120,18 +120,17 @@ class BridgeSession {
   }
 
   _startDrainLoop() {
-    let lastLogTime = 0;
     let drainLoopRuns = 0;
 
-    // 80ms pacing loop to send audio in smooth 80ms packets
+    // 20ms pacing loop to send audio in smooth 20ms packets (160 bytes of 8kHz mu-law)
     this.timer = setInterval(() => {
       drainLoopRuns++;
 
       try {
         if (this.isStopped) return;
 
-        // Log status every 1 second
-        if (drainLoopRuns % 12 === 0) {
+        // Log status occasionally
+        if (drainLoopRuns % 50 === 0) {
           log.info("📊 Drain loop status", {
             queueLength: this.queue.length,
             packetsStreamed: this.totalPackets,
@@ -139,7 +138,7 @@ class BridgeSession {
           });
         }
 
-        // Send audio as soon as we have chunks (NO prefill requirement - causes delays!)
+        // Send audio as soon as we have chunks
         if (this.queue.length > 0) {
           // Mark first audio as started
           if (this.totalPackets === 0) {
@@ -148,49 +147,39 @@ class BridgeSession {
             });
           }
 
-          // Group up to 4 chunks into one 80ms packet for stable streaming
-          let chunksToCombine = [];
-          for (let i = 0; i < 4 && this.queue.length > 0; i++) {
-            chunksToCombine.push(this.queue.shift());
-          }
+          // Send one 20ms chunk (160 bytes)
+          const chunk = this.queue.shift();
 
-          if (chunksToCombine.length > 0) {
-            const combined = Buffer.concat(chunksToCombine);
-            // Duration = audio length in bytes / (8000 samples/sec) * 1000 ms
-            const duration = Math.round((combined.length / 8000) * 1000);
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(
+              JSON.stringify({
+                event: "media",
+                streamSid: this.sid,
+                media: {
+                  payload: chunk.toString("base64"),
+                  timestamp: String(this.ts),
+                },
+              }),
+            );
+            this.ts += 20; // Each chunk is 20ms (160 bytes at 8kHz)
+            this.totalPackets++;
 
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-              this.ws.send(
-                JSON.stringify({
-                  event: "media",
-                  streamSid: this.sid,
-                  media: {
-                    payload: combined.toString("base64"),
-                    timestamp: String(this.ts),
-                  },
-                }),
-              );
-              this.ts += duration;
-              this.totalPackets++;
-
-              // Log every 50 packets for debugging
-              if (this.totalPackets % 50 === 0) {
-                log.info("📊 Audio packets sent", {
-                  packetsStreamed: this.totalPackets,
-                  queueLength: this.queue.length,
-                  timestampMs: this.ts,
-                  chunkSize: combined.length,
-                });
-              }
-            } else {
-              if (this.totalPackets > 0) {
-                // Only log if we've sent something
-                log.error("🚨 WebSocket closed during streaming", {
-                  wsState: this.ws ? this.ws.readyState : "undefined",
-                  packetsStreamed: this.totalPackets,
-                  queueRemaining: this.queue.length,
-                });
-              }
+            // Log every 50 packets for debugging
+            if (this.totalPackets % 50 === 0) {
+              log.info("📊 Audio packets sent", {
+                packetsStreamed: this.totalPackets,
+                queueLength: this.queue.length,
+                timestampMs: this.ts,
+                chunkSize: chunk.length,
+              });
+            }
+          } else {
+            if (this.totalPackets > 0) {
+              log.error("🚨 WebSocket closed during streaming", {
+                wsState: this.ws ? this.ws.readyState : "undefined",
+                packetsStreamed: this.totalPackets,
+                queueRemaining: this.queue.length,
+              });
             }
           }
         }
@@ -201,7 +190,7 @@ class BridgeSession {
           queueLength: this.queue.length,
         });
       }
-    }, 80); // Run every 80ms to match the 80ms chunks
+    }, 20); // Run every 20ms to match the 20ms chunks
   }
 
   stop(reason) {
