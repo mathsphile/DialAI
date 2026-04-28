@@ -101,13 +101,13 @@ class ElevenLabsSession extends EventEmitter {
       });
 
       this.ws.on("open", () => {
+        // We evaluate buildCallOverride to satisfy any local logging or side-effects,
+        // but do NOT send it to ElevenLabs as it causes a 1008 Override not allowed error.
         const override = buildCallOverride({
           language: this.language,
           callSid: this.callSid,
         });
         const initPayload = { type: "conversation_initiation_client_data" };
-        if (override && Object.keys(override).length > 0)
-          initPayload.conversation_config_override = override;
         this._sendJSON(initPayload);
       });
 
@@ -148,6 +148,11 @@ class ElevenLabsSession extends EventEmitter {
               if (detectedLang !== this.language) this.language = detectedLang;
               this.emit("transcript", text, this.language);
             }
+          } else {
+            log.info("ElevenLabs unhandled message type:", {
+              type: msg.type,
+              msg,
+            });
           }
         } catch (err) {
           log.error("Message parsing error from ElevenLabs", {
